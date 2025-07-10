@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Skaler i Konwerter Zdjęć</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- JSZip CDN for creating ZIP files on the client-side -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        /* Custom styles for Inter font and general body */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        /* Hide file input visually but keep it accessible */
+        .hidden-input {
+            display: none;
+        }
+        /* Style for drag-over effect */
+        .drag-over {
+            border-color: #3b82f6; /* Blue border on drag-over */
+            background-color: #eff6ff; /* Light blue background */
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-4xl border border-gray-200">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Skaler i Konwerter Zdjęć</h1>
+        <p class="text-center text-gray-600 mb-8">Przeciągnij i upuść do 30 zdjęć lub wybierz je, aby przeskalować do 500x500 JPG.</p>
+
+        <!-- Drag and Drop Area -->
+        <div id="drop-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors duration-200 mb-6">
+            <input type="file" id="fileInput" multiple accept="image/*" class="hidden-input">
+            <label for="fileInput" class="block text-blue-600 text-lg font-semibold mb-2">
+                Przeciągnij i upuść zdjęcia tutaj
+            </label>
+            <p class="text-gray-500 text-sm">lub kliknij, aby wybrać pliki (maks. 30 zdjęć)</p>
+            <p class="text-gray-500 text-xs mt-1">Obsługiwane formaty: JPG, PNG, GIF, BMP, WebP itp.</p>
+        </div>
+
+        <!-- Message Area -->
+        <div id="message" class="text-center text-red-600 font-medium mb-4 hidden"></div>
+
+        <!-- Loading Indicator -->
+        <div id="loading-indicator" class="text-center text-blue-600 font-semibold mb-4 hidden">
+            <svg class="animate-spin h-6 w-6 mx-auto text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="mt-2">Przetwarzanie zdjęć...</p>
+        </div>
+
+        <!-- Processed Images Preview -->
+        <div id="preview-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-6">
+            <!-- Processed images will be appended here -->
+        </div>
+
+        <!-- Download Button -->
+        <div class="text-center">
+            <button id="download-all-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                Pobierz wszystkie jako ZIP
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // DOM element references
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('fileInput');
+        const messageDiv = document.getElementById('message');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const previewContainer = document.getElementById('preview-container');
+        const downloadAllBtn = document.getElementById('download-all-btn');
+
+        // Array to store processed image data (Data URLs)
+        const processedImages = [];
+        const MAX_FILES = 30; // Maximum number of files allowed
+
+        // --- Event Listeners for Drag and Drop ---
+
+        // Prevent default drag behaviors to allow dropping
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false); // Prevent default for entire body
+        });
+
+        // Highlight drop area when dragging over
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => dropArea.classList.add('drag-over'), false);
+        });
+
+        // Remove highlight when dragging leaves
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => dropArea.classList.remove('drag-over'), false);
+        });
+
+        // Handle dropped files
+        dropArea.addEventListener('drop', handleDrop, false);
+        // Handle files selected via input click
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        // Prevent default browser behavior for drag events
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Handle files dropped onto the drop area
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        // --- Core File Handling and Processing Logic ---
+
+        // Main function to handle selected files (from drop or input)
+        async function handleFiles(files) {
+            // Clear previous messages and previews
+            messageDiv.textContent = '';
+            messageDiv.classList.add('hidden');
+            previewContainer.innerHTML = '';
+            processedImages.length = 0; // Clear the array
+            downloadAllBtn.disabled = true;
+            loadingIndicator.classList.remove('hidden');
+
+            // Filter files to only include images and respect MAX_FILES limit
+            const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/')).slice(0, MAX_FILES);
+
+            if (imageFiles.length === 0) {
+                showMessage('Nie wybrano żadnych zdjęć lub wybrano nieobsługiwany format.', 'red');
+                loadingIndicator.classList.add('hidden');
+                return;
+            }
+
+            if (files.length > MAX_FILES) {
+                showMessage(`Wybrano ${files.length} plików. Przetworzymy tylko pierwsze ${MAX_FILES}.`, 'orange');
+            }
+
+            let processedCount = 0;
+            // Process each image file
+            for (const file of imageFiles) {
+                try {
+                    // Await the processing of each image to ensure order and proper state management
+                    const processedDataUrl = await processImage(file);
+                    processedImages.push({
+                        name: file.name.split('.').slice(0, -1).join('.') + '.jpg', // Change extension to .jpg
+                        data: processedDataUrl // Store the Data URL
+                    });
+                    processedCount++;
+                    // Update loading indicator message
+                    loadingIndicator.querySelector('p').textContent = `Przetwarzanie zdjęć... (${processedCount}/${imageFiles.length})`;
+                } catch (error) {
+                    console.error(`Błąd podczas przetwarzania pliku ${file.name}:`, error);
+                    showMessage(`Błąd podczas przetwarzania pliku ${file.name}.`, 'red');
+                }
+            }
+
+            loadingIndicator.classList.add('hidden'); // Hide loading indicator after all files are processed
+
+            if (processedImages.length > 0) {
+                downloadAllBtn.disabled = false; // Enable download button
+                showMessage(`Pomyślnie przetworzono ${processedImages.length} zdjęć.`, 'green');
+            } else {
+                showMessage('Nie udało się przetworzyć żadnych zdjęć.', 'red');
+            }
+        }
+
+        /**
+         * Processes a single image file: scales to fit within 500x500 (maintaining aspect ratio),
+         * centers it on a white 500x500 canvas, and converts to JPG.
+         * @param {File} file - The image file to process.
+         * @returns {Promise<string>} A promise that resolves with the Data URL of the processed JPG image.
+         */
+        function processImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const targetSize = 500;
+                        canvas.width = targetSize;
+                        canvas.height = targetSize;
+                        const ctx = canvas.getContext('2d');
+
+                        // Fill the canvas with white background BEFORE drawing the image
+                        ctx.fillStyle = '#FFFFFF'; // White color
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                        // Calculate dimensions to fit the entire image within 500x500, maintaining aspect ratio
+                        let dWidth, dHeight;
+                        const scaleFactor = Math.min(targetSize / img.width, targetSize / img.height);
+                        dWidth = img.width * scaleFactor;
+                        dHeight = img.height * scaleFactor;
+
+                        // Calculate position to center the image on the 500x500 canvas
+                        const dx = (targetSize - dWidth) / 2;
+                        const dy = (targetSize - dHeight) / 2;
+
+                        // Draw the entire scaled image onto the canvas, centered
+                        // img: source image
+                        // 0, 0, img.width, img.height: source rectangle (entire image)
+                        // dx, dy, dWidth, dHeight: destination rectangle on canvas
+                        ctx.drawImage(img, 0, 0, img.width, img.height, dx, dy, dWidth, dHeight);
+
+                        // Convert canvas content to JPG Data URL (quality 1.0 = 100%)
+                        const dataUrl = canvas.toDataURL('image/jpeg', 1.0); // Increased quality to 100%
+                        displayPreview(dataUrl, file.name); // Display preview
+                        resolve(dataUrl);
+                    };
+                    img.onerror = (e) => {
+                        console.error("Error loading image:", e);
+                        reject(new Error("Failed to load image."));
+                    };
+                    img.src = event.target.result; // Set image source from FileReader result
+                };
+                reader.onerror = (e) => {
+                    console.error("Error reading file:", e);
+                    reject(new Error("Failed to read file."));
+                };
+                reader.readAsDataURL(file); // Read file as Data URL
+            });
+        }
+
+        // --- UI Display Functions ---
+
+        // Display a message to the user
+        function showMessage(msg, type = 'blue') {
+            messageDiv.textContent = msg;
+            messageDiv.className = `text-center font-medium mb-4 ${type === 'red' ? 'text-red-600' : type === 'green' ? 'text-green-600' : 'text-blue-600'}`;
+            messageDiv.classList.remove('hidden');
+        }
+
+        // Display a preview of the processed image
+        function displayPreview(dataUrl, originalFileName) {
+            const previewItem = document.createElement('div');
+            previewItem.className = 'relative group rounded-lg overflow-hidden shadow-md';
+            previewItem.innerHTML = `
+                <img src="${dataUrl}" alt="Przetworzone zdjęcie" class="w-full h-48 object-cover">
+                <div class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    <button class="download-single-btn bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full text-sm shadow-lg" data-filename="${originalFileName.split('.').slice(0, -1).join('.') + '.jpg'}" data-url="${dataUrl}">
+                        Pobierz
+                    </button>
+                </div>
+            `;
+            previewContainer.appendChild(previewItem);
+
+            // Attach event listener for single download button
+            previewItem.querySelector('.download-single-btn').addEventListener('click', (e) => {
+                const filename = e.target.dataset.filename;
+                const url = e.target.dataset.url;
+                downloadFile(url, filename);
+            });
+        }
+
+        // --- Download Functions ---
+
+        // Download a single file
+        function downloadFile(dataUrl, filename) {
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = filename;
+            document.body.appendChild(a); // Append to body is necessary for Firefox
+            a.click();
+            document.body.removeChild(a); // Clean up
+        }
+
+        // Download all processed images as a ZIP file
+        downloadAllBtn.addEventListener('click', async () => {
+            if (processedImages.length === 0) {
+                showMessage('Brak zdjęć do pobrania.', 'red');
+                return;
+            }
+
+            loadingIndicator.classList.remove('hidden');
+            loadingIndicator.querySelector('p').textContent = 'Przygotowywanie pliku ZIP...';
+            downloadAllBtn.disabled = true; // Disable button during ZIP creation
+
+            const zip = new JSZip();
+            processedImages.forEach((img, index) => {
+                // Remove 'data:image/jpeg;base64,' prefix for JSZip
+                const base64Data = img.data.split(',')[1];
+                zip.file(img.name, base64Data, { base64: true });
+            });
+
+            try {
+                // Generate ZIP file as a Blob
+                const content = await zip.generateAsync({ type: "blob" });
+                // Create a download link for the ZIP file
+                const zipFilename = `przetworzone_zdjecia_${Date.now()}.zip`;
+                const url = URL.createObjectURL(content);
+                downloadFile(url, zipFilename);
+                URL.revokeObjectURL(url); // Clean up the object URL
+
+                showMessage('Plik ZIP został pomyślnie utworzony i pobrany.', 'green');
+            } catch (error) {
+                console.error("Error creating ZIP:", error);
+                showMessage('Wystąpił błąd podczas tworzenia pliku ZIP.', 'red');
+            } finally {
+                loadingIndicator.classList.add('hidden');
+                downloadAllBtn.disabled = false; // Re-enable button
+            }
+        });
+
+    </script>
+</body>
+</html>
